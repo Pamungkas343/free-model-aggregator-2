@@ -412,7 +412,8 @@ async function dialModel(
   if (ranked.length > 0) plan.push(ranked[0], ranked[0]);
   if (ranked.length > 1) plan.push(ranked[1]);
   const failures: FailureRow[] = [];
-  for (const model of plan) {
+  for (let i = 0; i < plan.length; i++) {
+    const model = plan[i];
     if (callBudget.used >= MAX_GATEWAY_CALLS_PER_TRIAL) break;
     const requestBody: Record<string, unknown> = {
       ...chatBody,
@@ -425,6 +426,15 @@ async function dialModel(
       return { answer: result.answer, modelId: model.id, failures };
     }
     failures.push({ status: result.status, code: result.code, model: model.id });
+    // A 403/400 means this model refuses the request outright (e.g. the
+    // provider restricts the model to agentic harnesses). Retrying the same
+    // model is pointless: skip its remaining attempts and fail over to the
+    // next distinct model in the plan.
+    if (result.status === 403 || result.status === 400) {
+      while (i + 1 < plan.length && plan[i + 1] === model) i++;
+      if (i < plan.length - 1) await sleep(RETRY_WAIT_MS);
+      continue;
+    }
     // A refusal is not an answer: retry the same model once, then fail over.
     // Only 429 and 5xx (and network errors, status 0) are worth retrying;
     // any other refusal is final for this model.
